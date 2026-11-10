@@ -61,3 +61,10 @@
 | 文件 | 改动 | 原因 | 验证方式 |
 |---|---|---|---|
 | `README.md` | 整篇重写为 fork 自己的 README：`我们改了什么`（8 行对照表：上游行为 / 本 fork / 验证方式，覆盖 llm.py、search.py、configuration.py 优先级、graph.py、prompts.py、前端 modelOptions+InputForm+App、requirements+colorlog、test_adapter 12 守卫）、`配置`（env 表与前端 `VITE_MODEL_OPTIONS`）、`跑法（本机实测）`、`轮数（Effort 下拉框）`、`已验证（数字与日期）`、`已知边界`；上游原文不再保留，只在末尾与开头各留一行出处指向（上游 `main` = `e34e569`、Apache-2.0） | 用户要求 README 不用原版，内容改为我们自己的修改；此前 README 仍写着必须 `GEMINI_API_KEY` 与 Google Search，与代码不符 | 第二通道 `Get-Content` 复核（`read` 可能返回缓存快照）：新标题与"我们改了什么 / 已验证 / 已知边界"三节均在盘上；commit 后 `git show --stat` 确认 README 变更行数 |
+
+## 2026-11-10 11:00 — 检索层走代理（`SEARCH_PROXY`）+ 重试回退 + brave provider
+
+| 文件 | 改动 | 原因 | 验证方式 |
+|---|---|---|---|
+| `backend/src/agent/search.py` | 新增 `get_proxy()` / `_proxies()` / `_ddgs_kwargs()` / `_sync_proxy_env()`；`run_search()` 改为 dispatch 表 + `SEARCH_RETRIES` 重试 + `SEARCH_FALLBACK` 回退；新增 `brave` provider（`BRAVE_API_KEY`）；`searxng` 拿不到 JSON 时抛可读错误而非空列表 | 用户指出 `duckduckgo` / `searx.be` / `search.brave.com` 可走代理访问。git 与 requests 都不读 Windows 系统代理（IE 设置），必须显式传；第三方 SDK（tavily）只认 env，故 `_sync_proxy_env` 只在未设置时补。ddgs 参数名随版本变（9.16.1 是 `proxy=`，旧版是 `proxies=`）⇒ 按签名挑 | guard 13–18（18/18 PASS，11:00 复跑 exit 0）；实跑 `SEARCH_PROXY=http://127.0.0.1:10808`：ddg 3 条、bing 3 条、searxng 报"实例未启用 format=json"、brave/serper 报缺 key |
+| `backend/.env` / `.env.example` | 补 `SEARCH_PROXY` / `SEARCH_RETRIES` / `SEARCH_FALLBACK` / `BRAVE_API_KEY`；`.env` 的 `SEARCH_PROVIDER` 由 `bing` 改 `duckduckgo`（带 `SEARCH_FALLBACK=bing` 兜底）；注释里写明实测结论 | 此前"连不通"的结论来自单点测试，复测推翻：DDG 走代理和直连都能出结果（3 条 query ×2 通道：走代理 3/3、3/3、空；直连 3/3、空、3/3），间歇性反爬靠重试；`searx.be` 走代理 200 但返回 antibot 页且 `format=json` 被禁用；Brave HTML 429、API 可达（无 key 时 422 参数校验 ⇒ 请求已到达 API） | 复测脚本 `ddg_direct_vs_proxy.py`（对照同一 query、同一代码路径，走代理 vs 直连）；结果记入 README「已知边界」 |

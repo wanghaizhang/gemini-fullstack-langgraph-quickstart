@@ -2,10 +2,13 @@
 
 Google Search grounding 是 Gemini 专有能力，换模型后必须换成真正的检索工具。
 环境变量:
-  SEARCH_PROVIDER      duckduckgo | tavily | searxng | none     默认 duckduckgo
+  SEARCH_PROVIDER      duckduckgo | tavily | searxng | bing | serper | brave | none     默认 duckduckgo
   SEARCH_MAX_RESULTS   每个 query 取几条，默认 5
+  SEARCH_PROXY         例 http://127.0.0.1:10808；requests 与 ddgs 都会走它（本机直连常被反爬拦）
   TAVILY_API_KEY       tavily 时需要
-  SEARXNG_URL          searxng 时的实例地址（自托管或公共实例）
+  SERPER_API_KEY       serper 时需要
+  BRAVE_API_KEY        brave 时需要
+  SEARXNG_URL          searxng 实例地址；公共实例多数禁用 format=json（实测 searx.be 走代理 200 但返回 antibot 页），需要自托管实例
 
 返回统一结构，与前端/上游 citations 形状一致：
   {"label": str, "short_url": str, "value": str, "snippet": str}
@@ -13,7 +16,9 @@ Google Search grounding 是 Gemini 专有能力，换模型后必须换成真正
 none = 不检索（纯模型路径，用于离线自检或无网络的端点测试）。
 """
 
+import inspect
 import os
+import time
 from urllib.parse import urlparse
 
 def get_search_provider() -> str:
@@ -23,6 +28,41 @@ def get_search_provider() -> str:
 
 def get_max_results() -> int:
     return int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+
+
+def get_retries() -> int:
+    return int(os.getenv("SEARCH_RETRIES", "3"))
+
+
+def get_fallback() -> str:
+    return (os.getenv("SEARCH_FALLBACK") or "").lower()
+
+
+def get_proxy() -> str:
+    """读取时取值。注意 git/requests 不会读 Windows 系统代理（IE 设置），必须显式给。"""
+    return os.getenv("SEARCH_PROXY") or ""
+
+
+def _proxies() -> dict | None:
+    proxy = get_proxy()
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
+def _ddgs_kwargs(ddgs_cls) -> dict:
+    """ddgs 的参数名随版本变（新版 proxy=，旧版 proxies=）；按签名挑，挑不到就靠 env 代理。"""
+    kw = {"timeout": 15}
+    proxy = get_proxy()
+    if not proxy:
+        return kw
+    try:
+        params = inspect.signature(ddgs_cls.__init__).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "proxy" in params:
+        kw["proxy"] = proxy
+    elif "proxies" in params:
+        kw["proxies"] = {"http": proxy, "https": proxy}
+    return kw
 
 
 def make_label(url: str, title: str = "") -> str:
@@ -51,7 +91,7 @@ def _duckduckgo(query: str, n: int) -> list[dict]:
         from duckduckgo_search import DDGS  # 旧包名回退
 
     out = []
-    with DDGS(timeout=15) as ddgs:
+    with DDGS(**_ddgs_kwargs(DDGS)) as ddgs:
         for r in ddgs.text(query, max_results=n):
             url = r.get("url") or r.get("href") or ""
             if url:
@@ -82,12 +122,20 @@ def _searxng(query: str, n: int) -> list[dict]:
     resp = requests.get(
         url.rstrip("/") + "/search",
         params={"q": query, "format": "json"},
+        proxies=_proxies(),
         timeout=15,
     )
     resp.raise_for_status()
+    try:
+        data = resp.json()
+    except ValueError:
+        raise ValueError(
+            "searxng 实例未启用 format=json（公共实例常见，实测 searx.be 走代理 200 但返回 antibot HTML）；"
+            "改用自托管实例，或换 SEARCH_PROVIDER=bing / serper / brave"
+        )
     return [
         _item(r.get("url", ""), r.get("title", ""), r.get("content", ""))
-        for r in resp.json().get("results", [])[:n]
+        for r in data.get("results", [])[:n]
         if r.get("url")
     ]
 
@@ -111,7 +159,7 @@ def _decode_bing(href: str) -> str:
 
 
 def _bing(query: str, n: int) -> list[dict]:
-    """免 key 的 HTML 抓取（本机实测可达；DDG/Brave API 在本机连不通）。"""
+    """免 key 的 HTML 抓取。直连可达；DDG/Brave 走 SEARCH_PROXY 才稳定（见文件头）。"""
     import html as html_mod
     import re
 
@@ -124,6 +172,7 @@ def _bing(query: str, n: int) -> list[dict]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         },
+        proxies=_proxies(),
         timeout=15,
     )
     resp.raise_for_status()
@@ -156,6 +205,7 @@ def _serper(query: str, n: int) -> list[dict]:
         "https://google.serper.dev/search",
         headers={"X-API-KEY": key},
         json={"q": query, "num": n},
+        proxies=_proxies(),
         timeout=15,
     )
     resp.raise_for_status()
@@ -166,20 +216,75 @@ def _serper(query: str, n: int) -> list[dict]:
     ]
 
 
+def _brave(query: str, n: int) -> list[dict]:
+    """Brave Search API，需要 BRAVE_API_KEY。HTML 端点走代理也会被限流（实测 429），API 路径正常。"""
+    key = os.getenv("BRAVE_API_KEY")
+    if not key:
+        raise ValueError("SEARCH_PROVIDER=brave 需要 BRAVE_API_KEY")
+    import requests
+
+    resp = requests.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params={"q": query, "count": n},
+        headers={"Accept": "application/json", "X-Subscription-Token": key},
+        proxies=_proxies(),
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return [
+        _item(r.get("url", ""), r.get("title", ""), r.get("description", ""))
+        for r in resp.json().get("web", {}).get("results", [])[:n]
+        if r.get("url")
+    ]
+
+
+def _sync_proxy_env() -> None:
+    """第三方 SDK（tavily 等）靠 env 代理；这里把 SEARCH_PROXY 同步过去，只在未设置时写。"""
+    proxy = get_proxy()
+    if not proxy:
+        return
+    os.environ.setdefault("HTTP_PROXY", proxy)
+    os.environ.setdefault("HTTPS_PROXY", proxy)
+
+
 def run_search(query: str, n: int | None = None) -> list[dict]:
-    """Run one search query and return citation-shaped results."""
+    """Run one search query and return citation-shaped results.
+
+    DDG 间歇性抛 No results found（反爬），重试常能拿到结果；重试仍空时按 SEARCH_FALLBACK 换 provider。
+    """
     limit = n or get_max_results()
     provider = get_search_provider()
     if provider == "none":
         return []
-    if provider in ("duckduckgo", "ddg"):
-        return _duckduckgo(query, limit)
-    if provider == "tavily":
-        return _tavily(query, limit)
-    if provider == "searxng":
-        return _searxng(query, limit)
-    if provider == "bing":
-        return _bing(query, limit)
-    if provider == "serper":
-        return _serper(query, limit)
-    raise ValueError(f"未知 SEARCH_PROVIDER: {provider}")
+
+    dispatch = {
+        "duckduckgo": _duckduckgo,
+        "ddg": _duckduckgo,
+        "tavily": _tavily,
+        "searxng": _searxng,
+        "bing": _bing,
+        "serper": _serper,
+        "brave": _brave,
+    }
+    fn = dispatch.get(provider)
+    if fn is None:
+        raise ValueError(f"未知 SEARCH_PROVIDER: {provider}")
+
+    _sync_proxy_env()
+    last_error = None
+    for attempt in range(get_retries()):
+        try:
+            out = fn(query, limit)
+            if out:
+                return out
+        except Exception as exc:  # 反爬 / 限流 / 网络，重试或回退
+            last_error = exc
+        if attempt + 1 < get_retries():
+            time.sleep(1)
+
+    fallback = get_fallback()
+    if fallback and fallback != provider and fallback in dispatch:
+        return dispatch[fallback](query, limit)
+    if last_error:
+        raise last_error
+    return []

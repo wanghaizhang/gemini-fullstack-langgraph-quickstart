@@ -112,5 +112,71 @@ check(
     f"unlisted falls back to LLM_PROVIDER={llm_mod.get_provider()}",
 )
 
+# guard 13: 检索走代理（本机直连常被反爬拦），env 读取时取值
+os.environ["SEARCH_PROXY"] = "http://127.0.0.1:10808"
+importlib.reload(search_mod)
+check("guard13 search proxy env", search_mod.get_proxy() == "http://127.0.0.1:10808"
+      and search_mod._proxies() == {"http": "http://127.0.0.1:10808", "https": "http://127.0.0.1:10808"},
+      f"proxies={search_mod._proxies()}")
+
+# guard 14: ddgs 参数名随版本变（新版 proxy=，旧版 proxies=）——按签名挑，离线用假类
+class NewStyle:
+    def __init__(self, proxy=None, timeout=None):
+        pass
+
+class OldStyle:
+    def __init__(self, proxies=None, timeout=None):
+        pass
+
+check("guard14 ddgs kwargs by signature",
+      search_mod._ddgs_kwargs(NewStyle) == {"timeout": 15, "proxy": "http://127.0.0.1:10808"}
+      and search_mod._ddgs_kwargs(OldStyle) == {"timeout": 15, "proxies": {"http": "http://127.0.0.1:10808", "https": "http://127.0.0.1:10808"}},
+      "new=proxy= / old=proxies=")
+
+# guard 15: 第三方 SDK（tavily）靠 env 代理；只补空，不覆盖已有值
+os.environ.pop("HTTP_PROXY", None)
+os.environ["HTTPS_PROXY"] = "http://127.0.0.1:9999"
+search_mod._sync_proxy_env()
+check("guard15 proxy env synced without overwrite",
+      os.environ.get("HTTP_PROXY") == "http://127.0.0.1:10808" and os.environ.get("HTTPS_PROXY") == "http://127.0.0.1:9999",
+      f"HTTP_PROXY={os.environ.get('HTTP_PROXY')} HTTPS_PROXY={os.environ.get('HTTPS_PROXY')}")
+
+# guard 16: brave provider 需要 key（不联网，只验错误信息可读）
+os.environ.pop("BRAVE_API_KEY", None)
+os.environ["SEARCH_PROVIDER"] = "brave"
+importlib.reload(search_mod)
+try:
+    search_mod.run_search("q")
+    check("guard16 brave requires key", False, "不应在无 key 时成功")
+except ValueError as e:
+    check("guard16 brave requires key", "BRAVE_API_KEY" in str(e), str(e))
+
+# guard 17: 重试 + 回退（DDG 间歇性反爬）——离线用 stub，不联网
+os.environ["SEARCH_PROVIDER"] = "duckduckgo"
+os.environ["SEARCH_RETRIES"] = "2"
+os.environ["SEARCH_FALLBACK"] = "bing"
+importlib.reload(search_mod)
+
+calls = {"ddg": 0, "bing": 0}
+search_mod._duckduckgo = lambda q, n: (calls.__setitem__("ddg", calls["ddg"] + 1), [])[1]
+search_mod._bing = lambda q, n: (calls.__setitem__("bing", calls["bing"] + 1), [search_mod._item("https://x.com/a", "x.com", "s")])[1]
+out = search_mod.run_search("q")
+check("guard17 retry then fallback", calls["ddg"] == 2 and len(out) == 1, f"ddg calls={calls['ddg']}, out={out}")
+
+# guard 18: 无回退时把最后一次异常抛出（不静默返回空）
+os.environ["SEARCH_FALLBACK"] = ""
+os.environ["SEARCH_RETRIES"] = "3"
+calls["ddg"] = 0
+def failing_ddg(q, n):
+    calls["ddg"] += 1
+    raise RuntimeError("anti-bot")
+
+search_mod._duckduckgo = failing_ddg
+try:
+    search_mod.run_search("q")
+    check("guard18 raises when no fallback", False, "应抛异常")
+except RuntimeError as e:
+    check("guard18 raises when no fallback", calls["ddg"] == 3 and "anti-bot" in str(e), f"calls={calls['ddg']}, {e}")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
