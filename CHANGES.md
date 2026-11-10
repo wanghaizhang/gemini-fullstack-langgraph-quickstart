@@ -56,8 +56,8 @@
 | `frontend/src/App.tsx` | `thread.submit(values, { config: { configurable: { model } } })` | 后端 config_schema 是 `Configuration`，model 必须走 config 才能覆盖所有节点（state input 只对部分节点可见） | `SubmitOptions.config` 是 SDK 支持的入参（`@langchain/langgraph-sdk` 0.0.74 `dist/react/stream.d.ts`） |
 | `backend/test_adapter.py` | 新增 guard 9–12（config 优先、env 作默认、resolve_model 顺序、provider map） | 锁住"前端选择被 env 吃掉"这个回归 | `cd backend && .\.venv\Scripts\python.exe test_adapter.py` → 12 passed, 0 failed |
 
-## 2026-11-10 — README 更新（把实测口径写进文档）
+## 2026-11-10 — README 整篇改为"本 fork 自己的版本"（不再沿用上游原文）
 
 | 文件 | 改动 | 原因 | 验证方式 |
 |---|---|---|---|
-| `README.md` | 新增三节：`Pluggable LLM Provider and Search`（env 表：`LLM_PROVIDER` / `LOCAL_BASE_URL` / `LOCAL_MODEL` / `MODEL_PROVIDER_MAP` / `LLM_DEBUG` / `SEARCH_PROVIDER` + 各 key；优先级 `config.configurable > env > 字段默认值`；前端 `VITE_MODEL_OPTIONS` / `VITE_DEFAULT_MODEL` 与"改后需重启"）、`Research Budget (the Effort dropdown)`（low 1/1、medium 3/3、high 5/10，回环退出条件与检索质量影响）、`Development Notes (Windows, measured)`（纯 ASCII env/requirements、`PYTHONUTF8=1`、`colorlog`、`pip install -e .` 或 `PYTHONPATH=backend\src`、沙盒内 `--no-reload`、`make` 不可用、vite 绑 `localhost` → `::1`、`assistant_id` 必须在 body、答案在 `messages[-1]`）；开头与 Features 把"Google Search API / Gemini 绑定"改成可插拔口径；Technologies 补 OpenAI 兼容与检索 provider | README 仍写着必须 `GEMINI_API_KEY` 与 Google Search，实际已经可插拔且模型选择走 config；文档与代码不符 | 第二通道 `Get-Content` 复核：175 行，三个新节标题与关键串（`MODEL_PROVIDER_MAP`、`LLM_DEBUG`、`VITE_MODEL_OPTIONS`、Effort 表）均在盘上 |
+| `README.md` | 整篇重写为 fork 自己的 README：`我们改了什么`（8 行对照表：上游行为 / 本 fork / 验证方式，覆盖 llm.py、search.py、configuration.py 优先级、graph.py、prompts.py、前端 modelOptions+InputForm+App、requirements+colorlog、test_adapter 12 守卫）、`配置`（env 表与前端 `VITE_MODEL_OPTIONS`）、`跑法（本机实测）`、`轮数（Effort 下拉框）`、`已验证（数字与日期）`、`已知边界`；上游原文不再保留，只在末尾与开头各留一行出处指向（上游 `main` = `e34e569`、Apache-2.0） | 用户要求 README 不用原版，内容改为我们自己的修改；此前 README 仍写着必须 `GEMINI_API_KEY` 与 Google Search，与代码不符 | 第二通道 `Get-Content` 复核（`read` 可能返回缓存快照）：新标题与"我们改了什么 / 已验证 / 已知边界"三节均在盘上；commit 后 `git show --stat` 确认 README 变更行数 |

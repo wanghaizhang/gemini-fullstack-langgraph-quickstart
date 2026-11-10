@@ -1,175 +1,95 @@
-# Gemini Fullstack LangGraph Quickstart
+# LangGraph 研究 Agent（本 fork）
 
-This project demonstrates a fullstack application using a React frontend and a LangGraph-powered backend agent. The agent is designed to perform comprehensive research on a user's query by dynamically generating search terms, querying the web through a pluggable search provider, reflecting on the results to identify knowledge gaps, and iteratively refining its search until it can provide a well-supported answer with citations. This application serves as an example of building research-augmented conversational AI using LangGraph and Google's Gemini models.
+上游是 `google-gemini/gemini-fullstack-langgraph-quickstart`（Apache-2.0）。这份 README 只描述**我们自己的版本**——上游原文在 git 历史里（`main` = `e34e569`），改动逐条登记在 [CHANGES.md](CHANGES.md)。
 
-<img src="./app.png" title="Gemini Fullstack LangGraph" alt="Gemini Fullstack LangGraph" width="90%">
+本 fork 解决两件事：
 
-## Features
+1. **不依赖 Gemini 也能跑**：LLM provider 与检索 provider 都可插拔（上游把两者都硬绑在 Gemini 上，Google grounding 是 Gemini 专有能力）。
+2. **前端的模型选择真正生效**：上游的 `Configuration.from_runnable_config` 让 env 永远赢，下拉框的值被静默丢弃。
 
-- 💬 Fullstack application with a React frontend and LangGraph backend.
-- 🧠 Powered by a LangGraph agent for advanced research and conversational AI.
-- 🔍 Dynamic search query generation using Google Gemini models.
-- 🌐 Integrated web research through a pluggable search provider (Google grounding, or `duckduckgo` / `tavily` / `searxng` / `bing` / `serper` / `none`).
-- 🔌 Pluggable LLM provider: Gemini, or any OpenAI-compatible endpoint (Ollama / vLLM / DeepSeek / LM Studio) via `LLM_PROVIDER=openai`.
-- 🎛️ Model dropdown driven by `frontend/.env` (`VITE_MODEL_OPTIONS`, `VITE_DEFAULT_MODEL`) — swapping models needs no code change.
-- 🤔 Reflective reasoning to identify knowledge gaps and refine searches.
-- 📄 Generates answers with citations from gathered sources.
-- 🔄 Hot-reloading for both frontend and backend during development.
+工作分支 `feat/model-agnostic`（上游 `main` 不动）。
 
-## Project Structure
+## 我们改了什么
 
-The project is divided into two main directories:
+| # | 位置 | 上游行为 | 本 fork | 验证方式 |
+|---|---|---|---|---|
+| 1 | `backend/src/agent/llm.py`（新增） | provider/model 硬绑 Gemini，import 时检查 key | `get_llm(model, temp, max_retries, provider)` 按 `LLM_PROVIDER` 返回 `ChatGoogleGenerativeAI` 或 `ChatOpenAI`；`resolve_provider(model)` 支持 `MODEL_PROVIDER_MAP`（一个下拉框混跑 google/openai）；`invoke_structured()` 带 JSON 文本回退（本地小模型上 `with_structured_output` 经常失败）；`LLM_DEBUG=1` 打印每次实际用的 provider/model | 离线守卫 1–6、12 |
+| 2 | `backend/src/agent/search.py`（新增） | 只能用 Gemini 的 Google Search grounding | `duckduckgo` / `tavily` / `searxng` / `bing` / `serper` / `none`，返回形状与上游 `sources_gathered` 及前端 ActivityTimeline 一致 | 守卫 7–8；实跑 bing 返回 5 条 |
+| 3 | `backend/src/agent/configuration.py` | `os.environ.get(name.upper(), configurable.get(name))` ⇒ env 永远赢，前端选择被吃掉 | 优先级 `config.configurable > env > 字段默认值`；新增 `model` 字段与 `resolve_model(node_default, state_value)` | 守卫 9–12 |
+| 4 | `backend/src/agent/graph.py` | 四个节点各写各的模型名；无 key 时 import 就抛 `ValueError` | 四个节点统一走 `resolve_model()`；`web_research` 的非 google 分支（检索 + 归纳）；key 检查与 `genai_client` 只在 provider=google 时生效 | 实跑 run `01a1c036-f06d-710b-867a-8a1690866053` |
+| 5 | `backend/src/agent/prompts.py` | 提示词假定 Google grounding 的 `vertexaisearch` 短链引用格式 | `search_summary_instructions`（把检索结果喂给模型并要求 markdown 引用）与 `answer_instructions_plain`（不依赖短链的引用格式） | 实跑输出引用为 markdown `[n]` |
+| 6 | 前端 `src/lib/modelOptions.ts`（新增）、`InputForm.tsx`、`App.tsx`、`vite-env.d.ts`、`.env.example` | 下拉框硬编码三个 Gemini 名字，换模型要改代码 | 选项来自 `VITE_MODEL_OPTIONS` / `VITE_DEFAULT_MODEL`；提交走 `config.configurable.model`（`Send` 出来的 `web_research` state 只有 `search_query`/`id`，只靠 state input 拿不到选择） | `tsc --noEmit` exit=0；vite 转换后模块头部已 inlined 两个变量 |
+| 7 | `backend/requirements.txt`（新增）、`pyproject.toml` | 无 requirements；缺 `colorlog`（uvicorn `ValueError: Unable to configure formatter 'simple'`） | 与 `pyproject.toml` 一致的清单（含 `langgraph-cli[inmem]`、`colorlog`、`langchain-openai`、`ddgs`），装法写明：装进**项目目录内的 `.venv`** | pip 装完，服务正常起 |
+| 8 | `backend/test_adapter.py`（新增） | — | 12 条离线守卫（不联网、不调模型）：provider 切换、JSON 回退、citations 形状、config 优先级、provider map | 12/12 PASS（2026-11-10 复跑，exit 0） |
 
--   `frontend/`: Contains the React application built with Vite.
--   `backend/`: Contains the LangGraph/FastAPI application, including the research agent logic.
+## 配置
 
-## Getting Started: Development and Local Testing
+`backend/.env`（**必须纯 ASCII**：`python-dotenv` 按 Windows locale 解码，中文注释直接 `UnicodeDecodeError`）。
 
-Follow these steps to get the application running locally for development and testing.
-
-**1. Prerequisites:**
-
--   Node.js and npm (or yarn/pnpm)
--   Python 3.11+
--   **`GEMINI_API_KEY`**: The backend agent requires a Google Gemini API key.
-    1.  Navigate to the `backend/` directory.
-    2.  Create a file named `.env` by copying the `backend/.env.example` file.
-    3.  Open the `.env` file and add your Gemini API key: `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"`
-
-**2. Install Dependencies:**
-
-**Backend:**
-
-```bash
-cd backend
-pip install .
-```
-
-**Frontend:**
-
-```bash
-cd frontend
-npm install
-```
-
-**3. Run Development Servers:**
-
-**Backend & Frontend:**
-
-```bash
-make dev
-```
-This will run the backend and frontend development servers.    Open your browser and navigate to the frontend development server URL (e.g., `http://localhost:5173/app`).
-
-_Alternatively, you can run the backend and frontend development servers separately. For the backend, open a terminal in the `backend/` directory and run `langgraph dev`. The backend API will be available at `http://127.0.0.1:2024`. It will also open a browser window to the LangGraph UI. For the frontend, open a terminal in the `frontend/` directory and run `npm run dev`. The frontend will be available at `http://localhost:5173`._
-
-## Development Notes (Windows, measured)
-
-- Python 3.11+. `python` can be the Microsoft Store alias (unusable); use `py -3.11`.
-- Install dependencies into the repo's own `.venv` (`pip install -e .` — the project name is `agent`, which is what makes `from agent...` importable). Keep pip caches outside the repo (`--cache-dir <workspace>`); `requirements.txt` mirrors `pyproject.toml` and stays ASCII.
-- `langgraph dev` needs `langgraph-cli[inmem]` and `colorlog` (missing `colorlog` → uvicorn `ValueError: Unable to configure formatter 'simple'`), and `PYTHONUTF8=1` (the API reads an OpenAPI file with `f.read()`, which fails under a `gbk` locale).
-- In a confined sandbox, run `langgraph dev --no-reload --no-browser`: reload uses multiprocessing named pipes and fails with `WinError 5`.
-- `make dev` requires `make`; run `langgraph dev` and `npm run dev` separately if it is unavailable.
-- Frontend: use `npm install --ignore-scripts` when postinstall spawns are blocked, and run `npm run dev` in a normal shell — vite bundles its config through esbuild, which spawns a child process.
-- vite binds `localhost`, which on some Windows setups resolves to IPv6 `::1`: `http://localhost:5173/app/` answers while `http://127.0.0.1:5173/` does not. Add `--host` to expose it on IPv4/LAN.
-- API details: `assistant_id` must be in the body of `POST /threads/{thread_id}/runs` (in the query string it returns 422); the final answer lives in `messages[-1]` — the state has no `answer` key. Every deviation from upstream is recorded in [CHANGES.md](CHANGES.md).
-
-## Pluggable LLM Provider and Search
-
-Nothing is fixed at import time: `backend/src/agent/llm.py` and `backend/src/agent/search.py` read the settings on each call, because `agent/__init__.py` imports `graph` before `load_dotenv()` runs (reading them at import time would see empty values).
-
-Settings live in `backend/.env` — keep that file ASCII only, `python-dotenv` decodes it with the Windows locale and non-ASCII comments raise `UnicodeDecodeError`.
-
-| Variable | Values | Notes |
+| 变量 | 取值 | 说明 |
 |---|---|---|
-| `LLM_PROVIDER` | `google` \| `openai` | `openai` covers any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, LM Studio, official OpenAI) |
-| `LOCAL_BASE_URL` | e.g. `http://127.0.0.1:8081/v1` | used when `LLM_PROVIDER=openai` |
-| `LOCAL_MODEL` | model name served by the endpoint | default when the request does not carry a model |
-| `MODEL_PROVIDER_MAP` | `name=provider` pairs, comma separated | per-model provider, so one dropdown can mix Google and OpenAI-compatible models; unlisted names fall back to `LLM_PROVIDER` |
-| `LLM_DEBUG` | `1` | prints the provider/model actually used for every call |
-| `SEARCH_PROVIDER` | `duckduckgo` \| `tavily` \| `searxng` \| `bing` \| `serper` \| `none` | `bing` works without a key; Google grounding is used only when the resolved provider is `google` |
-| `TAVILY_API_KEY` / `SERPER_API_KEY` / `SEARXNG_URL` | — | required for those providers |
-| `GEMINI_API_KEY` | — | required only when the resolved provider is `google` |
+| `LLM_PROVIDER` | `google` \| `openai` | `openai` 覆盖任何 OpenAI 兼容端点（Ollama / vLLM / DeepSeek / LM Studio / 官方） |
+| `LOCAL_BASE_URL` | 例 `http://127.0.0.1:8081/v1` | `LLM_PROVIDER=openai` 时使用 |
+| `LOCAL_MODEL` | 端点服务的模型名 | 请求没带 model 时的默认值 |
+| `MODEL_PROVIDER_MAP` | `name=provider` 逗号分隔 | 按模型指定 provider，未列出的回退 `LLM_PROVIDER` |
+| `LLM_DEBUG` | `1` | 每次调用打印实际 provider/model（排查"选择有没有生效"用这个） |
+| `SEARCH_PROVIDER` | `duckduckgo` \| `tavily` \| `searxng` \| `bing` \| `serper` \| `none` | `bing` 免 key；Google grounding 只在解析出的 provider 是 `google` 时启用 |
+| `TAVILY_API_KEY` / `SERPER_API_KEY` / `SEARXNG_URL` | — | 对应 provider 需要 |
+| `GEMINI_API_KEY` | — | 仅 provider=google 时需要 |
 
-Precedence is **per-request `config.configurable` > env > field default** (`Configuration.from_runnable_config`). The frontend sends the dropdown value as `config.configurable.model`, which is what makes it reach every node — `web_research` receives the slim state created by `Send` (`search_query`, `id`) and cannot see a model passed through state input alone.
-
-**Model dropdown (frontend).** Options come from `frontend/.env`, no code change needed:
+前端下拉框在 `frontend/.env`（Vite 只在启动时读 `.env`，改后必须重启）：
 
 ```
 VITE_MODEL_OPTIONS=qwen3.8-flash-next-iq2_xs|Qwen 3.8 Flash,deepseek-chat|DeepSeek
 VITE_DEFAULT_MODEL=qwen3.8-flash-next-iq2_xs
 ```
 
-The list must contain model names the endpoint actually serves. Vite reads `.env` only at startup, so restart `npm run dev` after changing it.
+列表里必须写端点**实际服务**的模型名。
 
-## Research Budget (the Effort dropdown)
+## 跑法（本机实测）
 
-The number of rounds is bounded by two numbers the frontend sends with each message ([`frontend/src/App.tsx`](frontend/src/App.tsx)):
-
-| Effort | initial search queries | max research loops |
-|---|---|---|
-| low | 1 | 1 |
-| medium (default) | 3 | 3 |
-| high | 5 | 10 |
-
-Each query fans out into its own `web_research` node, and each loop can add one more query per knowledge gap, so a medium run looks like: 1 initial fan-out (3 searches) + up to 3 loops (reflection + follow-up searches) + finalize. The loop exits earlier when the model reports the information as sufficient; weak search results (dictionary pages, ads) keep the knowledge gap open, so the run is more likely to hit the cap. The values are `state` inputs; the backend falls back to `number_of_initial_queries` / `max_research_loops` only when the caller does not send them.
-
-## How the Backend Agent Works (High-Level)
-
-The core of the backend is a LangGraph agent defined in `backend/src/agent/graph.py`. It follows these steps:
-
-<img src="./agent.png" title="Agent Flow" alt="Agent Flow" width="50%">
-
-1.  **Generate Initial Queries:** Based on your input, it generates a set of initial search queries using a Gemini model.
-2.  **Web Research:** For each query, it calls the configured model with the configured search provider — Google grounding when the provider is `google`, otherwise a real search API (`duckduckgo` / `tavily` / `searxng` / `bing` / `serper`), and the model summarises the returned snippets.
-3.  **Reflection & Knowledge Gap Analysis:** The agent analyzes the search results to determine if the information is sufficient or if there are knowledge gaps. It uses a Gemini model for this reflection process.
-4.  **Iterative Refinement:** If gaps are found or the information is insufficient, it generates follow-up queries and repeats the web research and reflection steps (up to a configured maximum number of loops).
-5.  **Finalize Answer:** Once the research is deemed sufficient, the agent synthesizes the gathered information into a coherent answer, including citations from the web sources, using a Gemini model.
-
-## CLI Example
-
-For quick one-off questions you can execute the agent from the command line. The
-script `backend/examples/cli_research.py` runs the LangGraph agent and prints the
-final answer:
-
-```bash
+```powershell
 cd backend
-python examples/cli_research.py "What are the latest trends in renewable energy?"
+py -3.11 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt --cache-dir D:\demo\.pip-cache
+.venv\Scripts\pip install -e .            # 让 `agent` 包可 import；或 $env:PYTHONPATH="backend\src"
+$env:PYTHONUTF8="1"
+langgraph dev --no-reload --no-browser    # http://127.0.0.1:2024，assistant `agent`
+
+cd ..\frontend
+npm install --ignore-scripts
+npm run dev                               # http://localhost:5173/app/
 ```
 
+`make dev` 需要 `make`（本机没有），分别跑两边即可。vite 绑 `localhost`，本机解析到 `::1`，用 `http://localhost:5173/app/`；要 IPv4/局域网加 `--host`。
 
-## Deployment
+## 轮数（Effort 下拉框）
 
-In production, the backend server serves the optimized static frontend build. LangGraph requires a Redis instance and a Postgres database. Redis is used as a pub-sub broker to enable streaming real time output from background runs. Postgres is used to store assistants, threads, runs, persist thread state and long term memory, and to manage the state of the background task queue with 'exactly once' semantics. For more details on how to deploy the backend server, take a look at the [LangGraph Documentation](https://langchain-ai.github.io/langgraph/concepts/deployment_options/). Below is an example of how to build a Docker image that includes the optimized frontend build and the backend server and run it via `docker-compose`.
+轮数被两个数限死，前端随每条消息下发（[frontend/src/App.tsx](frontend/src/App.tsx)）：
 
-_Note: For the docker-compose.yml example you need a LangSmith API key, you can get one from [LangSmith](https://smith.langchain.com/settings)._
+| Effort | 初始检索词 | 最大回环 |
+|---|---|---|
+| low | 1 | 1 |
+| medium（默认） | 3 | 3 |
+| high | 5 | 10 |
 
-_Note: If you are not running the docker-compose.yml example or exposing the backend server to the public internet, you should update the `apiUrl` in the `frontend/src/App.tsx` file to your host. Currently the `apiUrl` is set to `http://localhost:8123` for docker-compose or `http://localhost:2024` for development._
+每条检索词各开一个 `web_research` 节点，每轮可再补若干 follow-up query，所以 medium 的形状是：1 次初始扇出（3 检索）+ 最多 3 轮回环（reflection + 追加检索）+ finalize。提前退出条件是模型判定信息足够（`is_sufficient`）；检索结果质量差（词典页、推广页）会让缺口判不出来，更容易跑满上限。
 
-**1. Build the Docker Image:**
+## 已验证（数字与日期）
 
-   Run the following command from the **project root directory**:
-   ```bash
-   docker build -t gemini-fullstack-langgraph -f Dockerfile .
-   ```
-**2. Run the Production Server:**
+- **2026-11-09 15:44** — 端点 `http://127.0.0.1:8081/v1`：PONG 2.34 s、结构化输出 5.28 s（走 `with_structured_output`，JSON 回退未触发）、bing 检索 5 条 3.6 s，全链路（generate_query → web_research → reflection → finalize_answer）产出带 markdown 引用的答案。
+- **2026-11-09 16:45** — `langgraph dev` 起在 `http://127.0.0.1:2024`（assistant `agent` / `pro-search-agent`），`POST /threads` → `POST /threads/{id}/runs` `status=success`，答案含 20 条引用来源。
+- **2026-11-09 17:15** — 探针验证 config 优先级：进程 env `MODEL=probe-env-default`（假值）+ `LLM_DEBUG=1`，请求 `config.configurable.model` 传真模型名 → 四个节点都打印 config 的值（run `01a1c036-f06d-710b-867a-8a1690866053`）。
+- **2026-11-09 16:56** — 前端页面 200、`runs/stream` 200（SSE 92 行，含 values 事件与引用来源）。
+- **2026-11-10** — 离线守卫 12/12 PASS；前端 `tsc --noEmit -p tsconfig.json` exit=0；commit `64793bf`（17 文件 +816/−72）推送到 fork 的 `feat/model-agnostic`，`main` 保持上游 `e34e569`。
 
-   ```bash
-   GEMINI_API_KEY=<your_gemini_api_key> LANGSMITH_API_KEY=<your_langsmith_api_key> docker-compose up
-   ```
+## 已知边界
 
-Open your browser and navigate to `http://localhost:8123/app/` to see the application. The API will be available at `http://localhost:8123`.
+- 本机网络：`bing`(200) / `serper`(200) / `tavily`(401，需 key) 可达；`duckduckgo`、`searx.be`、`search.brave.com` 连不通 ⇒ 默认 `SEARCH_PROVIDER=bing`。
+- 版本漂移：实装 `langgraph 1.2.20` / `langchain 1.4.9`（仓库要求 `>=0.2.6` / `>=0.3.19`），import 与图编译通过。
+- 文件沙盒内跑 vite / `langgraph dev` 会撞 named pipe 边界（esbuild 派生子进程、reload 走 multiprocessing），在正常终端里不存在这个问题。
+- 调用口径易踩：`runs` 的 `input` 必须给 `messages`（研究主题取自 `get_research_topic(state["messages"])`，给 `input.query` 会被忽略）；`assistant_id` 必须在 POST body；最终答案在 `messages[-1]`（state 里没有 `answer` 键）。
 
-## Technologies Used
+## 许可
 
-- [React](https://reactjs.org/) (with [Vite](https://vitejs.dev/)) - For the frontend user interface.
-- [Tailwind CSS](https://tailwindcss.com/) - For styling.
-- [Shadcn UI](https://ui.shadcn.com/) - For components.
-- [LangGraph](https://github.com/langchain-ai/langgraph) - For building the backend research agent.
-- [Google Gemini](https://ai.google.dev/models/gemini) - LLM for query generation, reflection, and answer synthesis (default provider).
-- [LangChain OpenAI adapter](https://python.langchain.com/docs/integrations/chat/openai/) - Same agent against any OpenAI-compatible endpoint.
-- Pluggable search backends - `duckduckgo` / `tavily` / `searxng` / `bing` / `serper`, or Google grounding when the provider is `google`.
-
-## License
-
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details. 
+Apache License 2.0，见 [LICENSE](LICENSE) 文件。上游项目：[google-gemini/gemini-fullstack-langgraph-quickstart](https://github.com/google-gemini/gemini-fullstack-langgraph-quickstart)。
