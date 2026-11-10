@@ -94,3 +94,37 @@ User Context:
 
 Summaries:
 {summaries}"""
+
+
+search_summary_instructions = """You are a research assistant writing a summary from retrieved search results.
+
+Instructions:
+- The current date is {current_date}.
+- Use ONLY the provided search results as facts; do not invent information.
+- Consolidate key findings and track the source for each specific piece of information.
+- Cite every claim inline with a markdown link using the exact URL given for that result, e.g. `[example.com](https://example.com/page)`.
+- Output a well-written summary or report, no preamble.
+
+Research Topic:
+{research_topic}
+
+Search results:
+{results}
+"""
+
+
+answer_instructions_plain = """Generate a high-quality answer to the user's question based on the provided summaries.
+
+Instructions:
+- The current date is {current_date}.
+- You are the final step of a multi-step research process, don't mention that you are the final step.
+- You have access to all the information gathered from the previous steps.
+- You have access to the user's question.
+- Generate a high-quality answer to the user's question based on the provided summaries and the user's question.
+- Include the sources you used from the Summaries in the answer correctly, use markdown format with the exact URL from the summaries (e.g. [apnews](https://apnews.com/article/...)). THIS IS A MUST.
+
+User Context:
+- {research_topic}
+
+Summaries:
+{summaries}"""

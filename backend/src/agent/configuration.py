@@ -8,6 +8,16 @@ from langchain_core.runnables import RunnableConfig
 class Configuration(BaseModel):
     """The configuration for the agent."""
 
+    model: Optional[str] = Field(
+        default=None,
+        metadata={
+            "description": (
+                "Model chosen by the caller (frontend dropdown). When set it overrides "
+                "the per-node model fields for the whole run."
+            )
+        },
+    )
+
     query_generator_model: str = Field(
         default="gemini-2.0-flash",
         metadata={
@@ -48,9 +58,10 @@ class Configuration(BaseModel):
             config["configurable"] if config and "configurable" in config else {}
         )
 
-        # Get raw values from environment or config
+        # Precedence: per-request configurable > env > field default.
+        # (Env used to win here, which silently ignored the frontend model dropdown.)
         raw_values: dict[str, Any] = {
-            name: os.environ.get(name.upper(), configurable.get(name))
+            name: configurable.get(name) or os.environ.get(name.upper())
             for name in cls.model_fields.keys()
         }
 
@@ -58,3 +69,7 @@ class Configuration(BaseModel):
         values = {k: v for k, v in raw_values.items() if v is not None}
 
         return cls(**values)
+
+    def resolve_model(self, node_default: str, state_value: Optional[str] = None) -> str:
+        """Model for a node: request config > state input > env/field default."""
+        return self.model or state_value or node_default

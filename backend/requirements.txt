@@ -1,0 +1,28 @@
+# backend/requirements.txt - mirrors pyproject.toml (langchain-openai / ddgs added for the provider switch)
+# Install into the venv inside the project directory (not the workspace root, not global):
+#   cd D:\demo\gemini-fullstack-langgraph-quickstart
+#   py -3.11 -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r backend\requirements.txt `
+#       -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --cache-dir D:\demo\.pip-cache
+# Note: keep this file ASCII-only - pip decodes it with the Windows locale codepage (gbk) and fails on non-ASCII.
+
+langgraph>=0.2.6
+langchain>=0.3.19
+langchain-google-genai
+langchain-openai
+ddgs
+python-dotenv
+langgraph-sdk
+langgraph-cli[inmem]
+fastapi
+google-genai
+colorlog            # needed by langgraph dev: uvicorn log config formatter 'simple'
+
+# Optional, install on demand (not listed above):
+#   tavily-python      -> SEARCH_PROVIDER=tavily
+#   requests           -> SEARCH_PROVIDER=bing / serper / searxng (already pulled in by langgraph: 2.34.2)
+
+# Installed on this machine (2026-11-09), for reproducibility:
+#   langgraph 1.2.20, langchain 1.4.9, langchain-core 1.7.6, langchain-openai 1.7.4,
+#   langchain-google-genai 4.4.3, ddgs 9.16.1, google-genai 3.0.0, langgraph-cli 0.4.42,
+#   fastapi 0.162.2, python-dotenv 1.2.4

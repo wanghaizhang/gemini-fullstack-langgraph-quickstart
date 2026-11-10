@@ -134,12 +134,17 @@ export default function App() {
           id: Date.now().toString(),
         },
       ];
-      thread.submit({
-        messages: newMessages,
-        initial_search_query_count: initial_search_query_count,
-        max_research_loops: max_research_loops,
-        reasoning_model: model,
-      });
+      thread.submit(
+        {
+          messages: newMessages,
+          initial_search_query_count: initial_search_query_count,
+          max_research_loops: max_research_loops,
+          reasoning_model: model,
+        },
+        // model 走 config.configurable：Configuration 的字段由 config 提供，
+        // state input 只作为后备（web_research 收到的是 Send 的精简 state，拿不到 reasoning_model）
+        { config: { configurable: { model } } }
+      );
     },
     [thread]
   );
